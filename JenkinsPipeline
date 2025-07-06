@@ -1,0 +1,119 @@
+pipeline {
+    agent any
+
+    environment {
+        DEV_SERVER = "azureuser@40.81.232.161"
+        QA_SERVER  = "azureuser@20.244.104.239"
+        EMAIL_TO   = "Amrishs94@gmail.com"
+    }
+
+    stages {
+
+        stage('Dev Deployment and Run') {
+            steps {
+                sshagent(['azureuser']) {
+                    sh '''
+                    ssh -o StrictHostKeyChecking=no $DEV_SERVER '
+                        sudo rm -rf Testleaf-pos
+                        docker stop pos-system-app || true
+                        docker rm pos-system-app || true
+                        docker rmi pos-system-app:latest || true
+                        git clone https://github.com/AmrishSukumaran/Testleaf-pos
+                        cd Testleaf-pos
+                        docker build -t pos-system-app:latest .
+                        docker run -d -p 80:80 -p 3500:3500 --name pos-system-app pos-system-app:latest
+                    '
+                    '''
+                }
+            }
+        }
+
+        stage('QA Code Scan') {
+            steps {
+                sshagent(['azureuser']) {
+                    sh '''
+                    ssh -o StrictHostKeyChecking=no $QA_SERVER '
+                        git clone https://github.com/AmrishSukumaran/pos-selenium-tests
+                        cd pos-selenium-tests
+                        mvn clean verify sonar:sonar \
+                            -Dsonar.projectKey=QACodeScan \
+                            -Dsonar.projectName=QACodeScan \
+                            -Dsonar.host.url=http://40.81.232.161:81 \
+                            -Dsonar.token=sqp_c639321c83d6d88b66993abc45600e8649ae7c9e \
+                            -DskipTests
+                    '
+                    '''
+                }
+            }
+        }
+
+        stage('QA Automation Test and Run') {
+            steps {
+                sshagent(['azureuser']) {
+                    sh '''
+                    ssh -o StrictHostKeyChecking=no $DEV_SERVER '
+                        sudo rm -rf pos-selenium-tests
+                        docker stop pos-selenium-test || true
+                        docker rm pos-selenium-test || true
+                        docker rmi pos-selenium-test:latest || true
+                        git clone https://github.com/AmrishSukumaran/pos-selenium-tests
+                        cd pos-selenium-tests
+                        docker build -t pos-selenium-test:latest -f posdockerfile .
+                        docker run -v $(pwd)/reports:/selenium/reports --name pos-selenium-test pos-selenium-test:latest
+                    '
+                    '''
+                }
+            }
+        }
+
+        stage('Test Mail Trigger') {
+            steps {
+                echo "Final step before email notification."
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                emailext (
+                    subject: "✅ DevOps Pipeline Success - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                    body: """
+Hi Team,
+
+The Jenkins pipeline for *${env.JOB_NAME}* completed **successfully** 🎉  
+Build Number: ${env.BUILD_NUMBER}  
+View the logs: ${env.BUILD_URL}console
+
+Regards,  
+Jenkins
+""",
+                    to: "${EMAIL_TO}",
+                    from: "${EMAIL_TO}"
+                )
+            }
+        }
+
+        failure {
+            script {
+                emailext (
+                    subject: "❌ DevOps Pipeline Failed - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                    body: """
+Hi Team,
+
+The Jenkins pipeline for *${env.JOB_NAME}* **failed** ⚠️  
+Build Number: ${env.BUILD_NUMBER}  
+View the logs: ${env.BUILD_URL}console
+
+Please check and investigate the issue.
+
+Regards,  
+Jenkins
+""",
+                    to: "${EMAIL_TO}",
+                    from: "${EMAIL_TO}"
+                )
+            }
+        }
+    }
+}
